@@ -53,6 +53,7 @@ struct pixart_data {
 // device config data structure
 struct pixart_config {
     struct gpio_dt_spec irq_gpio;
+    struct gpio_dt_spec power_gpio;
     struct spi_dt_spec bus;
     struct gpio_dt_spec cs_gpio;
     size_t scroll_layers_len;

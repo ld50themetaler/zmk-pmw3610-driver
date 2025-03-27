@@ -13,6 +13,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/input/input.h>
+#include <zephyr/pm/device.h>  // Add PM include
 #include <zmk/keymap.h>
 #include "pmw3610.h"
 
@@ -424,6 +425,9 @@ static int pmw3610_async_init_power_up(const struct device *dev) {
     spi_cs_ctrl(dev, false);
     spi_cs_ctrl(dev, true);
 
+    // Send wakeup command
+    reg_write(dev, PMW3610_REG_POWER_UP_RESET, PMW3610_POWERUP_CMD_WAKEUP);
+
     /* not required in datashet, but added any way to have a clear state */
     return reg_write(dev, PMW3610_REG_POWER_UP_RESET, PMW3610_POWERUP_CMD_RESET);
 }
@@ -765,6 +769,70 @@ static int pmw3610_init_irq(const struct device *dev) {
     return err;
 }
 
+#if defined(CONFIG_PM_DEVICE)
+static int pmw3610_pm_control(const struct device *dev, enum pm_device_action action)
+{
+    struct pixart_data *data = dev->data;
+    const struct pixart_config *config = dev->config;
+    int ret = 0;
+
+    switch (action) {
+    case PM_DEVICE_ACTION_RESUME:
+#if DT_INST_NODE_HAS_PROP(0, power_gpios)
+        if (device_is_ready(config->power_gpio.port)) {
+            ret = gpio_pin_set_dt(&config->power_gpio, 1);
+            if (ret < 0) {
+                LOG_ERR("Failed to enable power: %d", ret);
+                return ret;
+            }
+            // Wait for power stabilization
+            k_sleep(K_MSEC(10));
+        }
+#endif
+        // Send wakeup command
+        ret = reg_write(dev, PMW3610_REG_POWER_UP_RESET, PMW3610_POWERUP_CMD_WAKEUP);
+        if (ret) {
+            LOG_ERR("Failed to send wakeup command: %d", ret);
+            return ret;
+        }
+        
+        // Re-enable interrupt if device was initialized properly
+        if (data->ready) {
+            set_interrupt(dev, true);
+        }
+        break;
+        
+    case PM_DEVICE_ACTION_SUSPEND:
+        // Disable interrupt first
+        set_interrupt(dev, false);
+        
+        // Send shutdown command
+        ret = reg_write(dev, PMW3610_REG_SHUTDOWN, PMW3610_SHUTDOWN_CMD);
+        if (ret) {
+            LOG_ERR("Failed to send shutdown command: %d", ret);
+            return ret;
+        }
+        
+#if DT_INST_NODE_HAS_PROP(0, power_gpios)
+        // // Never disable power for torabo-tsuki
+        // if (device_is_ready(config->power_gpio.port)) {
+        //     ret = gpio_pin_set_dt(&config->power_gpio, 0);
+        //     if (ret < 0) {
+        //         LOG_ERR("Failed to disable power: %d", ret);
+        //         return ret;
+        //     }
+        // }
+#endif
+        break;
+        
+    default:
+        return -ENOTSUP;
+    }
+
+    return ret;
+}
+#endif /* CONFIG_PM_DEVICE */
+
 static int pmw3610_init(const struct device *dev) {
     LOG_INF("Start initializing...");
 
@@ -793,6 +861,19 @@ static int pmw3610_init(const struct device *dev) {
         return err;
     }
 
+#if DT_INST_NODE_HAS_PROP(0, power_gpios)
+    // Initialize power GPIO if defined
+    if (device_is_ready(config->power_gpio.port)) {
+        err = gpio_pin_configure_dt(&config->power_gpio, GPIO_OUTPUT_ACTIVE);
+        if (err) {
+            LOG_ERR("Cannot configure power GPIO");
+            return err;
+        }
+        // Wait for power stabilization
+        k_sleep(K_MSEC(10)); 
+    }
+#endif
+
     // init irq routine
     err = pmw3610_init_irq(dev);
     if (err) {
@@ -817,6 +898,7 @@ static int pmw3610_init(const struct device *dev) {
     static int32_t snipe_layers##n[] = DT_PROP(DT_DRV_INST(n), snipe_layers);                      \
     static const struct pixart_config config##n = {                                                \
         .irq_gpio = GPIO_DT_SPEC_INST_GET(n, irq_gpios),                                           \
+        .power_gpio = GPIO_DT_SPEC_INST_GET_OR(n, power_gpios, {0}),                               \
         .bus =                                                                                     \
             {                                                                                      \
                 .bus = DEVICE_DT_GET(DT_INST_BUS(n)),                                              \
@@ -835,7 +917,9 @@ static int pmw3610_init(const struct device *dev) {
         .snipe_layers_len = DT_PROP_LEN(DT_DRV_INST(n), snipe_layers),                             \
     };                                                                                             \
                                                                                                    \
-    DEVICE_DT_INST_DEFINE(n, pmw3610_init, NULL, &data##n, &config##n, POST_KERNEL,                \
-                          CONFIG_SENSOR_INIT_PRIORITY, NULL);
+    PM_DEVICE_DT_INST_DEFINE(n, pmw3610_pm_control);                                               \
+                                                                                                   \
+    DEVICE_DT_INST_DEFINE(n, pmw3610_init, PM_DEVICE_DT_INST_GET(n), &data##n, &config##n,         \
+                          POST_KERNEL, CONFIG_SENSOR_INIT_PRIORITY, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(PMW3610_DEFINE)
