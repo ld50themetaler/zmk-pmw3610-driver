@@ -722,7 +722,7 @@ static int pmw3610_report_data(const struct device *dev) {
 
     if (x != 0 || y != 0) {
         if (input_mode != SCROLL) {
-#if AUTOMOUSE_LAYER > 0
+#if AUTOMOUSE_LAYER > 0 && (!defined(CONFIG_ZMK_SPLIT) || defined(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
             // トラックボールの動きの大きさを計算
             int16_t movement_size = abs(x) + abs(y);
             if (input_mode == MOVE &&
